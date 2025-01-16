@@ -85,11 +85,9 @@ log "Installing dependencies"
 runcmd 'apk add python3 openresty nodejs yarn openssl apache2-utils logrotate $DEVDEPS'
 
 log "Setting up python"
-python3 -m venv /opt/certbot/
-. /opt/certbot/bin/activate
-runcmd pip install --no-cache-dir -U pip
-runcmd pip install --no-cache-dir cryptography==3.3.2 cffi certbot
-deactivate
+runcmd apk add py3-pip py3-cryptography py3-cffi
+runcmd pip install --no-cache-dir --upgrade pip
+runcmd pip install --no-cache-dir certbot
 
 log "Checking for latest NPM release"
 runcmd 'wget $WGETOPT -O ./_latest_release $NPMURL/releases/latest'
