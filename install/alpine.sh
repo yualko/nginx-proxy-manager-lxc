@@ -52,7 +52,6 @@ if [ -f /etc/init.d/npm ]; then
   sleep 2
 
   log "Cleaning old files"
-  # Cleanup for new install
   rm -rf /app \
   /var/www/html \
   /etc/nginx \
@@ -67,68 +66,54 @@ fi
 log "Checking for latest openresty repository"
 . /etc/os-release
 _alpine_version=${VERSION_ID%.*}
-# add openresty public key
 if [ ! -f /etc/apk/keys/admin@openresty.com-5ea678a6.rsa.pub ]; then
   runcmd 'wget $WGETOPT -P /etc/apk/keys/ http://openresty.org/package/admin@openresty.com-5ea678a6.rsa.pub'
 fi
 
-# Get the latest openresty repository
 _repository_version=$(wget $WGETOPT "http://openresty.org/package/alpine/" -O - | grep -Eo "[0-9]{1}\.[0-9]{1,2}" | sort -uVr | head -n1)
 _repository_version=$(printf "$_repository_version\n$_alpine_version" | sort -V | head -n1)
 _repository="http://openresty.org/package/alpine/v$_repository_version/main"
-
-# Update/Insert openresty repository
 grep -q 'openresty.org' /etc/apk/repositories &&
   sed -i "/openresty.org/c\\$_repository/" /etc/apk/repositories || echo $_repository >> /etc/apk/repositories
 
-# Update container OS
 log "Updating container OS"
 echo "fs.file-max = 65535" > /etc/sysctl.conf
 runcmd apk update
 runcmd apk upgrade
 
-# Install dependancies
 log "Installing dependencies"
 runcmd 'apk add python3 openresty nodejs yarn openssl apache2-utils logrotate $DEVDEPS'
 
-# Setup python env and PIP
 log "Setting up python"
 python3 -m venv /opt/certbot/
-runcmd python3 -m ensurepip --upgrade
-# Install certbot and python dependancies
-runcmd pip3 install --no-cache-dir -U cryptography==3.3.2
-runcmd pip3 install --no-cache-dir cffi certbot
+. /opt/certbot/bin/activate
+runcmd pip install --no-cache-dir -U pip
+runcmd pip install --no-cache-dir cryptography==3.3.2 cffi certbot
+deactivate
 
 log "Checking for latest NPM release"
-# Get latest version information for nginx-proxy-manager
 runcmd 'wget $WGETOPT -O ./_latest_release $NPMURL/releases/latest'
 _latest_version=$(basename $(cat ./_latest_release | grep -wo "expanded_assets/v.*\d") | cut -d'v' -f2)
 
-# Download nginx-proxy-manager source
 log "Downloading NPM v$_latest_version"
 runcmd 'wget $WGETOPT -c $NPMURL/archive/v$_latest_version.tar.gz -O - | tar -xz'
 cd ./nginx-proxy-manager-$_latest_version
 
-log "Setting up enviroment"
-# Crate required symbolic links
+log "Setting up environment"
 ln -sf /usr/bin/python3 /usr/bin/python
 ln -sf /usr/bin/pip3 /usr/bin/pip
 ln -sf /usr/bin/certbot /opt/certbot/bin/certbot
 ln -sf /usr/local/openresty/nginx/sbin/nginx /usr/sbin/nginx
 ln -sf /usr/local/openresty/nginx/ /etc/nginx
 
-# Update NPM version in package.json files
 sed -i "s+0.0.0+$_latest_version+g" backend/package.json
 sed -i "s+0.0.0+$_latest_version+g" frontend/package.json
-
-# Fix nginx config files for use with openresty defaults
 sed -i 's+^daemon+#daemon+g' docker/rootfs/etc/nginx/nginx.conf
 NGINX_CONFS=$(find "$(pwd)" -type f -name "*.conf")
 for NGINX_CONF in $NGINX_CONFS; do
   sed -i 's+include conf.d+include /etc/nginx/conf.d+g' "$NGINX_CONF"
 done
 
-# Copy runtime files
 mkdir -p /var/www/html /etc/nginx/logs
 cp -r docker/rootfs/var/www/html/* /var/www/html/
 cp -r docker/rootfs/etc/nginx/* /etc/nginx/
@@ -137,8 +122,8 @@ cp docker/rootfs/etc/logrotate.d/nginx-proxy-manager /etc/logrotate.d/nginx-prox
 ln -sf /etc/nginx/nginx.conf /etc/nginx/conf/nginx.conf
 rm -f /etc/nginx/conf.d/dev.conf
 
-# Create required folders
 mkdir -p /tmp/nginx/body \
+/tmp/nginx/body \
 /run/nginx \
 /data/nginx \
 /data/custom_ssl \
@@ -157,23 +142,17 @@ mkdir -p /tmp/nginx/body \
 
 chmod -R 777 /var/cache/nginx
 chown root /tmp/nginx
-
-# Dynamically generate resolvers file, if resolver is IPv6, enclose in `[]`
-# thanks @tfmm
 echo resolver "$(awk 'BEGIN{ORS=" "} $1=="nameserver" {print ($2 ~ ":")? "["$2"]": $2}' /etc/resolv.conf);" > /etc/nginx/conf.d/include/resolvers.conf
 
-# Generate dummy self-signed certificate.
 if [ ! -f /data/nginx/dummycert.pem ] || [ ! -f /data/nginx/dummykey.pem ]; then
   log "Generating dummy SSL certificate"
   runcmd 'openssl req -new -newkey rsa:2048 -days 3650 -nodes -x509 -subj "/O=Nginx Proxy Manager/OU=Dummy Certificate/CN=localhost" -keyout /data/nginx/dummykey.pem -out /data/nginx/dummycert.pem'
 fi
 
-# Copy app files
 mkdir -p /app/global /app/frontend/images
 cp -r backend/* /app
 cp -r global/* /app/global
 
-# Build the frontend
 log "Building frontend"
 cd ./frontend
 export NODE_ENV=development
@@ -182,7 +161,6 @@ runcmd yarn build
 cp -r dist/* /app/frontend
 cp -r app-images/* /app/frontend/images
 
-# Initialize backend
 log "Initializing backend"
 rm -rf /app/config/default.json &>/dev/null
 if [ ! -f /app/config/production.json ]; then
@@ -204,7 +182,6 @@ cd /app
 export NODE_ENV=development
 runcmd yarn install
 
-# Create NPM service
 log "Creating NPM service"
 cat << 'EOF' > /etc/init.d/npm
 #!/sbin/openrc-run
@@ -245,7 +222,6 @@ rc-update add npm boot &>/dev/null
 rc-update add openresty boot &>/dev/null
 rc-service openresty stop &>/dev/null
 
-# Start services
 log "Starting services"
 runcmd rc-service openresty start
 runcmd rc-service npm start
